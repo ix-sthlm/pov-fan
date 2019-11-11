@@ -39,20 +39,36 @@ const char* password = "POVFAN";
 class POVMatrix : public Adafruit_NeoMatrix {
   public:
   void showslice(int offset, int size);
+  inline uint8_t bytesperpixel(void) {
+    return ((wOffset == rOffset) ? 3 : 4);
+  }
   POVMatrix(int w, int h, uint8_t pin = 6,
     uint8_t matrixType = NEO_MATRIX_TOP + NEO_MATRIX_LEFT + NEO_MATRIX_ROWS,
     neoPixelType ledType = NEO_GRB + NEO_KHZ800)
     : Adafruit_NeoMatrix(w, h, pin, matrixType, ledType) {
     }
+    #if 0
+  void mirror(void) {
+    int sx, sy, dx, dy;
+    for (sy=0; sy<height/2; sy++) {
+      dy = sy+height/2;
+      for (sx=0; sx<width; sx++) {
+        dx = (sx+width/2)%width;
+        /*.... so, not only is there no readpixel, the pixel mapping function is 
+         hardcoded into drawPixel. Gah. */
+      }
+    }
+  }
+  #endif
 };
 
 void POVMatrix::showslice(int offset, int size) {
     uint8_t *oldPixels = pixels;
     uint16_t oldnumBytes = numBytes;
-    const uint8_t bytesperpixel = ((wOffset == rOffset) ? 3 : 4);
     // Horrifying abuse: trick show() into drawing a part of the buffer
-    numBytes -= width()*height()*bytesperpixel - size * bytesperpixel;
-    pixels += offset * bytesperpixel;
+    //numBytes -= width()*height()*bytesperpixel - size * bytesperpixel;
+    numBytes = size * bytesperpixel();
+    pixels += offset * bytesperpixel();
     show();
     pixels = oldPixels;
     numBytes = oldnumBytes;
@@ -63,8 +79,8 @@ void POVMatrix::showslice(int offset, int size) {
 // Arduino.  When held that way, the first pixel is at the top right, and
 // lines are arranged in columns, progressive order.  The shield uses
 // 800 KHz (v2) pixels that expect GRB color data.
-const uint16_t width = 64, height=2*8;
-POVMatrix matrix = POVMatrix(width, height, LED_PIN,
+const uint16_t width = 72-2, height=2*8, vwidth=2*width;
+POVMatrix matrix = POVMatrix(vwidth, height, LED_PIN,
   NEO_MATRIX_BOTTOM  + NEO_MATRIX_RIGHT +
   NEO_MATRIX_COLUMNS + NEO_MATRIX_PROGRESSIVE,
   NEO_GRB            + NEO_KHZ800);
@@ -72,12 +88,21 @@ POVMatrix matrix = POVMatrix(width, height, LED_PIN,
 const uint16_t colors[] = {
   matrix.Color(255, 0, 0), matrix.Color(0, 255, 0), matrix.Color(0, 0, 255) };
 
+hw_timer_t * timer = NULL;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+volatile char timercolor;
+
+void IRAM_ATTR onTimer(){
+  timercolor = (timercolor+1)%3;
+  //portENTER_CRITICAL_ISR(&timerMux);
+  //portEXIT_CRITICAL_ISR(&timerMux);
+}
+
 void setup() {
   WiFi.softAP(ssid, password);
   matrix.begin();
   matrix.setTextWrap(false);
   matrix.setBrightness(255);
-  matrix.setTextColor(colors[1]);
   ArduinoOTA.setHostname("myesp32");
   ArduinoOTA.setPassword("admin");
 
@@ -113,23 +138,34 @@ void setup() {
 
   // Enable index pin input
   pinMode(IDX_PIN, INPUT);
-  //timer = timerBegin(0, 80, true);
-  //timerAttachInterrupt(timer, &onTimer, true);
+  
+  timer = timerBegin(0, 80, true);
+  timerAttachInterrupt(timer, &onTimer, true);
+  timerAlarmWrite(timer, 500000, true);
+  timerAlarmEnable(timer);
 
   // TODO: Add an update command or something
   matrix.fillScreen(matrix.Color(0,0,0));
+
   matrix.setCursor(0, 8);
+  matrix.setTextColor(colors[1]);
   matrix.print(F("HELLO WORLD!"));
+
+  matrix.setCursor(width, 8);
+  matrix.setTextColor(colors[1]);
+  matrix.print(F("HAXOR SKILZ!"));
 
 }
 
 int x    = 0;
+int scrollx = 0, scrolltimerinit=100, scrolltimer=scrolltimerinit;
 int pass = 0;
 
 void loop() {
   ArduinoOTA.handle();
   if(--x < 0) {
     x = width-1;
+    matrix.drawFastHLine(0,7, vwidth, colors[timercolor]);
     // Await index (active low)
     while (!digitalRead(IDX_PIN)) {
        //ArduinoOTA.handle();
@@ -137,11 +173,19 @@ void loop() {
     while (digitalRead(IDX_PIN)) {
        //ArduinoOTA.handle();
     }
+    if (--scrolltimer<=0) {
+      if (scrollx<=0)
+        scrollx = vwidth-width;
+      else
+        scrollx -= width;
+
+      scrolltimer = scrolltimerinit;
+    }
     //x = matrix.width();
     //if(++pass >= 3) pass = 0;
     //matrix.setTextColor(colors[pass]);
   }
-  matrix.showslice(x*height, height);
+  matrix.showslice((x+scrollx)*height, height);
   //delay(1);
-  delayMicroseconds(10);
+  delayMicroseconds(8);
 }
